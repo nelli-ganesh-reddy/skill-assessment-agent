@@ -3,12 +3,13 @@
   "version": "1.0.0",
   "description": "AI-Powered Skill Assessment & Learning Plan Agent",
   "main": "server.js",
+  "workspaces": ["frontend"],
   "scripts": {
     "start": "node server.js",
     "dev": "npm-run-all --parallel backend frontend",
     "backend": "nodemon server.js",
     "frontend": "cd frontend && npm run dev",
-    "build": "cd frontend && npm run build",
+    "build": "npm run build --workspace=frontend",
     "build-all": "npm run build"
   },
   "keywords": [
