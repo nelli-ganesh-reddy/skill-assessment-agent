@@ -385,7 +385,7 @@ function AssessmentStage({ sessionId, onComplete }) {
       // Auto load next question after 2 seconds
       setTimeout(() => {
         loadNextQuestion();
-      }, 2000);
+      }, 5000);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to submit answer');
     } finally {
