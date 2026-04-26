@@ -15,8 +15,12 @@ const Groq = require('groq-sdk');
 require('dotenv').config();
 
 const app = express();
+const groqApiKey = process.env.GROQ_API_KEY;
+if (!groqApiKey) {
+  throw new Error('Missing required environment variable: GROQ_API_KEY');
+}
 const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
+  apiKey: groqApiKey,
 });
 
 // Middleware
