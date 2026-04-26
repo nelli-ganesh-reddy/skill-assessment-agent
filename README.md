@@ -7,7 +7,7 @@ AI-powered skill assessment and personalized learning plan generator using Groq'
 
 ## 📋 Table of Contents
 
-- [Overview](#overview)
+- [Overview](#Overview)
 - [Architecture](#architecture)
 - [Features](#features)
 - [Tech Stack](#tech-stack)
