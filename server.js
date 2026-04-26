@@ -4,9 +4,10 @@
  *
  * Features:
  * - Extract skills from Job Description
- * - Conversational skill assessment WITH FEEDBACK LOOP ← NEW
- * - Follow-up questions based on answer quality       ← NEW
- * - Conversation history per skill                    ← NEW
+ * - Conversational skill assessment
+ * - TRUE AGENT LOOP via Groq Tool Use / Function Calling ← NEW
+ * - LLM decides which tools to call and when            ← NEW
+ * - Conversation memory per skill
  * - Skill gap analysis
  * - Personalized learning plan generation
  */
@@ -18,9 +19,7 @@ require('dotenv').config();
 
 const app = express();
 const groqApiKey = process.env.GROQ_API_KEY;
-if (!groqApiKey) {
-  throw new Error('Missing required environment variable: GROQ_API_KEY');
-}
+if (!groqApiKey) throw new Error('Missing required environment variable: GROQ_API_KEY');
 const groq = new Groq({ apiKey: groqApiKey });
 
 app.use(cors());
@@ -30,7 +29,269 @@ app.use(express.static('public'));
 const assessmentSessions = {};
 
 // ============================================================================
-// HELPER FUNCTIONS (unchanged from your original)
+// TOOL DEFINITIONS — what the LLM can see and choose to call
+// ============================================================================
+
+const AGENT_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'evaluate_answer',
+      description: 'Evaluate the candidate\'s answer to a skill question. Returns a score 0-100, proficiency level, strengths, and gaps. Call this first after receiving any answer.',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill: { type: 'string', description: 'The skill being assessed e.g. "React", "Python"' },
+          question: { type: 'string', description: 'The question that was asked' },
+          answer: { type: 'string', description: "The candidate's answer" },
+          job_requirement_level: {
+            type: 'string',
+            enum: ['beginner', 'intermediate', 'advanced', 'not specified'],
+            description: 'The proficiency level required by the job',
+          },
+        },
+        required: ['skill', 'question', 'answer', 'job_requirement_level'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'generate_followup',
+      description: 'Generate a targeted follow-up question when the candidate\'s answer was weak (score < 60). Only call this if score < 60 AND attempts < 2.',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill: { type: 'string', description: 'The skill being assessed' },
+          gaps: { type: 'array', items: { type: 'string' }, description: 'Specific knowledge gaps identified' },
+          job_requirement_level: { type: 'string', description: 'The proficiency level required by the job' },
+          previous_answer: { type: 'string', description: "The candidate's previous weak answer" },
+        },
+        required: ['skill', 'gaps', 'job_requirement_level', 'previous_answer'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'finalize_skill',
+      description: 'Finalize the assessment for a skill. Call this when score >= 60 OR attempts >= 2. Do NOT call if asking a follow-up.',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill: { type: 'string', description: 'The skill being finalized' },
+          final_score: { type: 'number', description: 'Final score 0-100' },
+          final_level: { type: 'string', enum: ['beginner', 'intermediate', 'advanced'] },
+          reasoning: { type: 'string', description: 'Brief explanation of the final score' },
+          strengths: { type: 'array', items: { type: 'string' } },
+          gaps: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['skill', 'final_score', 'final_level', 'reasoning', 'strengths', 'gaps'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_learning_resources',
+      description: 'Fetch curated learning resources for a skill. Call this when finalizing a skill that has gaps.',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill: { type: 'string', description: 'The skill to find resources for' },
+          current_level: { type: 'string', enum: ['beginner', 'intermediate', 'advanced'] },
+          target_level: { type: 'string', enum: ['beginner', 'intermediate', 'advanced'] },
+        },
+        required: ['skill', 'current_level', 'target_level'],
+      },
+    },
+  },
+];
+
+// ============================================================================
+// TOOL IMPLEMENTATIONS — actual functions that run when LLM calls a tool
+// ============================================================================
+
+async function tool_evaluate_answer({ skill, question, answer, job_requirement_level }) {
+  console.log(`  [Tool] evaluate_answer → ${skill}`);
+  const prompt = `You are evaluating a candidate's ${skill} proficiency for a job that requires ${job_requirement_level} level.
+
+Question: ${question}
+Answer: ${answer}
+
+Return ONLY valid JSON:
+{
+  "score": 65,
+  "level": "intermediate",
+  "reasoning": "Shows practical knowledge but lacks depth in error handling",
+  "strengths": ["practical application"],
+  "gaps": ["error handling", "performance optimization"]
+}`;
+
+  const response = await callGroq([{ role: 'user', content: prompt }], 300);
+  if (!response.success) return { score: 50, level: 'intermediate', reasoning: 'Evaluation failed', strengths: [], gaps: [] };
+  try {
+    const jsonMatch = response.content.match(/\{[\s\S]*\}/);
+    return JSON.parse(jsonMatch[0]);
+  } catch (e) {
+    return { score: 50, level: 'intermediate', reasoning: 'Could not parse evaluation', strengths: [], gaps: [] };
+  }
+}
+
+async function tool_generate_followup({ skill, gaps, job_requirement_level, previous_answer }) {
+  console.log(`  [Tool] generate_followup → ${skill}, gaps: ${gaps.join(', ')}`);
+  const prompt = `You are a technical interviewer assessing ${skill} at ${job_requirement_level} level.
+
+The candidate gave a weak answer: "${previous_answer}"
+Their gaps are: ${gaps.join(', ')}
+
+Generate ONE specific follow-up question targeting their gaps. Return ONLY the question text.`;
+
+  const response = await callGroq([{ role: 'user', content: prompt }], 150);
+  return {
+    question: response.success ? response.content.trim() : `Can you elaborate more on ${gaps[0]} in ${skill}?`,
+  };
+}
+
+async function tool_finalize_skill({ skill, final_score, final_level, reasoning, strengths, gaps }) {
+  console.log(`  [Tool] finalize_skill → ${skill}: ${final_score}/100`);
+  return { skill, final_score, final_level, reasoning, strengths, gaps, finalized: true };
+}
+
+async function tool_fetch_learning_resources({ skill, current_level, target_level }) {
+  console.log(`  [Tool] fetch_learning_resources → ${skill} (${current_level} → ${target_level})`);
+  const prompt = `Suggest the best resources to learn ${skill} from ${current_level} to ${target_level} level.
+
+Return ONLY valid JSON:
+{
+  "resources": [
+    {
+      "title": "Resource name",
+      "type": "course|documentation|book|video|practice",
+      "url": "real URL",
+      "hours": 10,
+      "description": "Why this is good"
+    }
+  ],
+  "weeks_needed": 4,
+  "adjacent_skills": ["skill1", "skill2"]
+}
+
+Use REAL resources: GeeksforGeeks, official docs, freeCodeCamp, MDN, specific Udemy courses.`;
+
+  const response = await callGroq([{ role: 'user', content: prompt }], 400);
+  if (!response.success) return { resources: [], weeks_needed: 4, adjacent_skills: [] };
+  try {
+    const jsonMatch = response.content.match(/\{[\s\S]*\}/);
+    return JSON.parse(jsonMatch[0]);
+  } catch (e) {
+    return { resources: [], weeks_needed: 4, adjacent_skills: [] };
+  }
+}
+
+async function executeTool(toolName, toolArgs) {
+  switch (toolName) {
+    case 'evaluate_answer':          return await tool_evaluate_answer(toolArgs);
+    case 'generate_followup':        return await tool_generate_followup(toolArgs);
+    case 'finalize_skill':           return await tool_finalize_skill(toolArgs);
+    case 'fetch_learning_resources': return await tool_fetch_learning_resources(toolArgs);
+    default: return { error: `Unknown tool: ${toolName}` };
+  }
+}
+
+// ============================================================================
+// ★ THE CORE AGENT LOOP ★
+// LLM decides what tools to call. We execute and feed results back.
+// ============================================================================
+
+async function runAgentLoop(skill, conversationHistory, jobRequirement, attemptNumber) {
+  console.log(`\n[Agent] Starting loop → ${skill} (attempt ${attemptNumber})`);
+
+  const convoText = conversationHistory
+    .map(m => `${m.role === 'interviewer' ? 'Interviewer' : 'Candidate'}: ${m.content}`)
+    .join('\n\n');
+
+  const messages = [
+    {
+      role: 'system',
+      content: `You are an intelligent skill assessment agent evaluating a candidate's ${skill} proficiency.
+Job requires: ${jobRequirement || 'intermediate'} level.
+This is attempt number ${attemptNumber} (maximum 2 attempts per skill).
+
+Your job:
+1. ALWAYS call evaluate_answer first to score the latest candidate response
+2. If score < 60 AND attempt < 2: call generate_followup to probe deeper, then STOP
+3. If score >= 60 OR attempt >= 2: call finalize_skill to save the result
+4. If finalizing and candidate has gaps: also call fetch_learning_resources
+Think step by step and use tools in the right order.`,
+    },
+    {
+      role: 'user',
+      content: `Full conversation for ${skill} assessment:\n\n${convoText}\n\nEvaluate and decide next steps.`,
+    },
+  ];
+
+  const agentResult = {
+    status: null,
+    evaluation: null,
+    followup: null,
+    finalized: null,
+    resources: null,
+  };
+
+  let iteration = 0;
+  const MAX_ITERATIONS = 8;
+
+  while (iteration < MAX_ITERATIONS) {
+    iteration++;
+    console.log(`[Agent] Iteration ${iteration}`);
+
+    const response = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages,
+      tools: AGENT_TOOLS,
+      tool_choice: 'auto',
+      max_tokens: 1000,
+      temperature: 0.3,
+    });
+
+    const message = response.choices[0].message;
+    messages.push(message);
+
+    // No tool calls = LLM is done
+    if (!message.tool_calls || message.tool_calls.length === 0) {
+      console.log('[Agent] Done — no more tool calls');
+      break;
+    }
+
+    // Execute each tool the LLM called
+    for (const toolCall of message.tool_calls) {
+      const toolName = toolCall.function.name;
+      const toolArgs = JSON.parse(toolCall.function.arguments);
+
+      console.log(`[Agent] LLM called: ${toolName}`);
+      const toolResult = await executeTool(toolName, toolArgs);
+
+      if (toolName === 'evaluate_answer')          agentResult.evaluation = toolResult;
+      if (toolName === 'generate_followup')        { agentResult.followup = toolResult; agentResult.status = 'followup'; }
+      if (toolName === 'finalize_skill')           { agentResult.finalized = toolResult; agentResult.status = 'completed'; }
+      if (toolName === 'fetch_learning_resources') agentResult.resources = toolResult;
+
+      // Feed result back to LLM
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: JSON.stringify(toolResult),
+      });
+    }
+  }
+
+  console.log(`[Agent] Complete → status: ${agentResult.status}`);
+  return agentResult;
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
 // ============================================================================
 
 async function callGroq(messages, maxTokens = 500) {
@@ -41,10 +302,7 @@ async function callGroq(messages, maxTokens = 500) {
       max_tokens: maxTokens,
       temperature: 0.7,
     });
-    return {
-      success: true,
-      content: response.choices[0].message.content,
-    };
+    return { success: true, content: response.choices[0].message.content };
   } catch (error) {
     console.error('Groq API Error:', error);
     return { success: false, error: error.message };
@@ -77,20 +335,16 @@ Be precise and only extract actual skills mentioned. Return ONLY valid JSON, no 
   try {
     const jsonMatch = response.content.match(/\{[\s\S]*\}/);
     return JSON.parse(jsonMatch[0]);
-  } catch (e) {
-    return null;
-  }
+  } catch (e) { return null; }
 }
 
 async function extractSkillsFromResume(resumeText) {
   const prompt = `You are a resume analyzer. Extract all skills mentioned in this resume.
 
-IMPORTANT: If proficiency level is NOT explicitly stated, INFER it from context:
-- If skill mentioned in "EXPERIENCE" section with years → likely intermediate/advanced
-- If skill mentioned in "SKILLS" section only → likely beginner/intermediate
-- If mentioned with years of experience → estimate: <1yr=beginner, 1-3yrs=intermediate, >3yrs=advanced
-- If no years but in recent projects → intermediate
-- If mentioned passively → beginner
+IMPORTANT: Infer proficiency from context:
+- Experience section with years → intermediate/advanced
+- Skills section only → beginner/intermediate  
+- <1yr=beginner, 1-3yrs=intermediate, >3yrs=advanced
 
 Resume:
 ${resumeText}
@@ -100,111 +354,25 @@ Return JSON:
   "skills": [
     {"skill": "Python", "proficiency": "intermediate", "years": 2, "inferred": true}
   ],
-  "experience_summary": "Brief summary of relevant experience"
+  "experience_summary": "Brief summary"
 }
 
-Return ONLY valid JSON, no extra text.`;
+Return ONLY valid JSON.`;
 
   const response = await callGroq([{ role: 'user', content: prompt }], 400);
   if (!response.success) return null;
   try {
     const jsonMatch = response.content.match(/\{[\s\S]*\}/);
     return JSON.parse(jsonMatch[0]);
-  } catch (e) {
-    return null;
-  }
+  } catch (e) { return null; }
 }
 
-// ============================================================================
-// NEW AGENT FUNCTIONS — THE FEEDBACK LOOP
-// ============================================================================
-
-/**
- * Generate first question for a skill using full conversation context
- */
 async function generateFirstQuestion(skill, candidateLevel, jobRequirement) {
-  const systemPrompt = `You are a conversational technical interviewer assessing ${skill} proficiency.
-Your goal is to determine the candidate's TRUE proficiency through natural conversation.
-Ask one clear, focused question at a time. Be professional but conversational.`;
-
-  const userPrompt = `Candidate's claimed level: ${candidateLevel || 'unknown'}
-Job requires: ${jobRequirement || 'not specified'} level
-
-Ask your FIRST question to assess their ${skill} knowledge at the ${jobRequirement || 'appropriate'} level.
-Return ONLY the question, nothing else.`;
-
-  const response = await callGroq(
-    [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ],
-    150
-  );
+  const response = await callGroq([
+    { role: 'system', content: `You are a conversational technical interviewer assessing ${skill} proficiency. Ask one clear, focused question at a time.` },
+    { role: 'user', content: `Candidate level: ${candidateLevel || 'unknown'}. Job requires: ${jobRequirement || 'not specified'}. Ask your FIRST question to assess their ${skill} knowledge. Return ONLY the question.` },
+  ], 150);
   return response.success ? response.content.trim() : null;
-}
-
-/**
- * ★ THE CORE AGENT FUNCTION ★
- * 
- * Given the full conversation history for a skill, decide:
- * 1. Score the latest answer (0-100)
- * 2. Should we ask a follow-up? (if score < 60 and attempts < 2)
- * 3. If yes, generate a targeted follow-up question
- * 4. If no, finalize the score
- */
-async function evaluateAndDecide(skill, conversationHistory, jobRequirement, attemptNumber) {
-  const systemPrompt = `You are a technical interviewer assessing ${skill} proficiency.
-You have been having a conversation with a candidate.
-The job requires: ${jobRequirement || 'intermediate'} level.
-
-Your job:
-1. Evaluate their latest answer carefully
-2. Decide if you need ONE follow-up question to better assess them
-3. Return your decision as JSON`;
-
-  // Build a readable conversation summary for the LLM
-  const convoText = conversationHistory
-    .map(m => `${m.role === 'interviewer' ? 'You asked' : 'Candidate answered'}: ${m.content}`)
-    .join('\n\n');
-
-  const userPrompt = `Conversation so far:
-${convoText}
-
-Based on this conversation, evaluate the candidate's ${skill} knowledge.
-
-Return ONLY this JSON:
-{
-  "score": 65,
-  "level": "intermediate",
-  "reasoning": "Shows practical knowledge but lacks depth in error handling",
-  "strengths": ["can explain basic concepts"],
-  "gaps": ["error handling", "performance optimization"],
-  "needs_followup": true,
-  "followup_question": "Can you explain how you would handle errors in this scenario?",
-  "followup_reason": "Answer was vague on error handling which is critical for this role"
-}
-
-Rules:
-- "needs_followup": true ONLY if score < 60 AND this is attempt #${attemptNumber} (max 2 follow-ups total)
-- If attempt >= 2, always set needs_followup to false
-- followup_question should target a SPECIFIC gap you identified
-- followup_question is null if needs_followup is false`;
-
-  const response = await callGroq(
-    [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ],
-    400
-  );
-
-  if (!response.success) return null;
-  try {
-    const jsonMatch = response.content.match(/\{[\s\S]*\}/);
-    return JSON.parse(jsonMatch[0]);
-  } catch (e) {
-    return null;
-  }
 }
 
 function analyzeSkillGap(skill, candidateLevel, requiredLevel) {
@@ -220,64 +388,14 @@ function analyzeSkillGap(skill, candidateLevel, requiredLevel) {
   };
 }
 
-
-/**
- * Score a skill based on answer
- */
-async function scoreSkillAnswer(skill, question, answer) {
-  const prompt = `You are evaluating someone's ${skill} proficiency.
-
-Question: ${question}
-Their Answer: ${answer}
-
-Score their answer on a scale of 0-100 and provide reasoning.
-
-Return a JSON object:
-{
-  "score": 65,
-  "level": "intermediate",
-  "reasoning": "Shows practical knowledge but lacks depth in X",
-  "gaps": ["error handling", "optimization"],
-  "strengths": ["practical application", "clear explanation"]
-}
-
-Return ONLY valid JSON.`;
-
-  const response = await callGroq(
-    [{ role: 'user', content: prompt }],
-    300
-  );
-
-  if (!response.success) return null;
-
-  try {
-    const jsonMatch = response.content.match(/\{[\s\S]*\}/);
-    return JSON.parse(jsonMatch[0]);
-  } catch (e) {
-    console.error('JSON parse error:', e);
-    return null;
-  }
-}
-
 async function generateLearningPlan(jdSkills, assessedSkills, gapAnalysis) {
   const prompt = `You are an expert learning path designer.
 
-Required Skills (from JD):
-${JSON.stringify(jdSkills, null, 2)}
+Required Skills (from JD): ${JSON.stringify(jdSkills, null, 2)}
+Candidate's Assessed Skills: ${JSON.stringify(assessedSkills, null, 2)}
+Skill Gaps: ${JSON.stringify(gapAnalysis, null, 2)}
 
-Candidate's Assessed Skills:
-${JSON.stringify(assessedSkills, null, 2)}
-
-Skill Gaps:
-${JSON.stringify(gapAnalysis, null, 2)}
-
-Create a personalized learning plan that:
-1. Prioritizes critical gaps (skills with high importance and low current level)
-2. Recommends adjacent/easier skills that complement critical skills
-3. Suggests realistic timeline (in weeks)
-4. Provides specific resources (Udemy, YouTube, docs, GeeksforGeeks, books)
-
-Return JSON:
+Create a personalized learning plan. Return JSON:
 {
   "learning_path": [
     {
@@ -288,8 +406,7 @@ Return JSON:
       "weeks_needed": 6,
       "reason": "Essential for role, significant gap",
       "resources": [
-        {"title": "Django for Beginners", "type": "course", "url": "...", "hours": 30},
-        {"title": "Official Django Docs", "type": "documentation", "url": "..."}
+        {"title": "Django for Beginners", "type": "course", "url": "...", "hours": 30}
       ],
       "adjacent_skills": ["REST APIs", "PostgreSQL"]
     }
@@ -297,7 +414,7 @@ Return JSON:
   "total_timeline_weeks": 12,
   "can_parallelize": true,
   "estimated_study_hours": 150,
-  "summary": "Focus on Django and PostgreSQL first..."
+  "summary": "Focus on Django first..."
 }
 
 Return ONLY valid JSON.`;
@@ -307,60 +424,41 @@ Return ONLY valid JSON.`;
   try {
     const jsonMatch = response.content.match(/\{[\s\S]*\}/);
     return JSON.parse(jsonMatch[0]);
-  } catch (e) {
-    return null;
-  }
+  } catch (e) { return null; }
 }
 
 // ============================================================================
 // API ENDPOINTS
 // ============================================================================
 
-/**
- * POST /api/assess
- * Start a new assessment session (unchanged)
- */
 app.post('/api/assess', async (req, res) => {
   try {
     const { jd, resume } = req.body;
-    if (!jd || !resume) {
-      return res.status(400).json({ error: 'JD and resume are required' });
-    }
+    if (!jd || !resume) return res.status(400).json({ error: 'JD and resume are required' });
 
     const [jdSkills, resumeSkills] = await Promise.all([
       extractSkillsFromJD(jd),
       extractSkillsFromResume(resume),
     ]);
 
-    if (!jdSkills || !resumeSkills) {
-      return res.status(500).json({ error: 'Failed to extract skills. Please try again.' });
-    }
+    if (!jdSkills || !resumeSkills) return res.status(500).json({ error: 'Failed to extract skills.' });
 
     const sessionId = Date.now().toString();
     assessmentSessions[sessionId] = {
       jdSkills,
       resumeSkills,
-      assessedSkills: {},       // final scores land here
-      skillConversations: {},   // ← NEW: full chat history per skill
+      assessedSkills: {},
+      skillConversations: {},
+      skillResources: {},
       createdAt: new Date(),
     };
 
-    res.json({
-      sessionId,
-      jdSkills,
-      resumeSkills,
-      requiredSkillsCount: jdSkills.required_skills?.length || 0,
-      message: 'Assessment initialized. Ready to assess skills.',
-    });
+    res.json({ sessionId, jdSkills, resumeSkills, requiredSkillsCount: jdSkills.required_skills?.length || 0, message: 'Assessment initialized.' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-/**
- * GET /api/assess/:sessionId/next-question
- * Get the FIRST question for the next unassessed skill
- */
 app.get('/api/assess/:sessionId/next-question', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -368,35 +466,20 @@ app.get('/api/assess/:sessionId/next-question', async (req, res) => {
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
     const requiredSkills = session.jdSkills.required_skills;
-
-    // Find next skill that hasn't been FINALIZED yet
     let nextSkill = null;
     for (const skill of requiredSkills) {
-      if (!session.assessedSkills[skill.skill]) {
-        nextSkill = skill;
-        break;
-      }
+      if (!session.assessedSkills[skill.skill]) { nextSkill = skill; break; }
     }
 
-    if (!nextSkill) {
-      return res.json({ completed: true, message: 'All skills assessed!' });
-    }
+    if (!nextSkill) return res.json({ completed: true, message: 'All skills assessed!' });
 
     const candidateClaim = session.resumeSkills.skills?.find(
       s => s.skill.toLowerCase() === nextSkill.skill.toLowerCase()
     );
     const jobRequirementLevel = nextSkill.level || 'not specified';
-
-    // Generate the first question
-    const question = await generateFirstQuestion(
-      nextSkill.skill,
-      candidateClaim?.proficiency || 'unknown',
-      jobRequirementLevel
-    );
-
+    const question = await generateFirstQuestion(nextSkill.skill, candidateClaim?.proficiency || 'unknown', jobRequirementLevel);
     if (!question) return res.status(500).json({ error: 'Failed to generate question' });
 
-    // ← NEW: Initialize conversation history for this skill
     session.skillConversations[nextSkill.skill] = {
       history: [{ role: 'interviewer', content: question }],
       attemptNumber: 1,
@@ -422,21 +505,13 @@ app.get('/api/assess/:sessionId/next-question', async (req, res) => {
 
 /**
  * POST /api/assess/:sessionId/answer
- * 
- * ★ UPGRADED: Now has feedback loop ★
- * 
- * Submit answer → agent evaluates → decides:
- *   A) Score < 60 and attempts < 2 → returns follow-up question
- *   B) Score >= 60 or attempts >= 2 → finalizes score, moves to next skill
+ * ★ REAL GROQ TOOL USE AGENT LOOP ★
  */
 app.post('/api/assess/:sessionId/answer', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const { skill, answer } = req.body;  // ← no longer need "question" from client
-
-    if (!skill || !answer) {
-      return res.status(400).json({ error: 'skill and answer are required' });
-    }
+    const { skill, answer } = req.body;
+    if (!skill || !answer) return res.status(400).json({ error: 'skill and answer are required' });
 
     const session = assessmentSessions[sessionId];
     if (!session) return res.status(404).json({ error: 'Session not found' });
@@ -444,80 +519,75 @@ app.post('/api/assess/:sessionId/answer', async (req, res) => {
     const convo = session.skillConversations[skill];
     if (!convo) return res.status(400).json({ error: 'No active question for this skill. Call /next-question first.' });
 
-    // Add candidate's answer to conversation history
+    // Add answer to memory
     convo.history.push({ role: 'candidate', content: answer });
 
-    // ★ Agent evaluates and decides next step
-    const decision = await evaluateAndDecide(
-      skill,
-      convo.history,
-      convo.jobRequirement,
-      convo.attemptNumber
-    );
+    // ★ LLM decides what to do via tool use
+    const agentResult = await runAgentLoop(skill, convo.history, convo.jobRequirement, convo.attemptNumber);
 
-    if (!decision) return res.status(500).json({ error: 'Failed to evaluate answer' });
+    if (!agentResult.status) return res.status(500).json({ error: 'Agent failed to reach a decision' });
 
-    // CASE A: Score is weak → ask follow-up
-    if (decision.needs_followup && decision.followup_question) {
-      convo.history.push({ role: 'interviewer', content: decision.followup_question });
+    // CASE A: follow-up
+    if (agentResult.status === 'followup' && agentResult.followup?.question) {
+      convo.history.push({ role: 'interviewer', content: agentResult.followup.question });
       convo.attemptNumber += 1;
 
-      console.log(`${skill}: Score ${decision.score}/100 → asking follow-up (attempt ${convo.attemptNumber})`);
-
       return res.json({
-        status: 'followup',            // ← frontend checks this
+        status: 'followup',
         skill,
-        score: decision.score,         // interim score (can show or hide)
-        reasoning: decision.reasoning,
-        followup_question: decision.followup_question,
-        followup_reason: decision.followup_reason,
+        score: agentResult.evaluation?.score,
+        reasoning: agentResult.evaluation?.reasoning,
+        followup_question: agentResult.followup.question,
         attemptNumber: convo.attemptNumber,
-        message: `Follow-up question for ${skill}`,
       });
     }
 
-    // CASE B: Good enough or max attempts reached → finalize
-    session.assessedSkills[skill] = {
-      score: decision.score,
-      level: decision.level,
-      reasoning: decision.reasoning,
-      gaps: decision.gaps,
-      strengths: decision.strengths,
-      totalAttempts: convo.attemptNumber,
-      conversationHistory: convo.history,  // stored for audit/display
-    };
+    // CASE B: completed
+    if (agentResult.status === 'completed' && agentResult.finalized) {
+      const { final_score, final_level, reasoning, strengths, gaps } = agentResult.finalized;
 
-    console.log(`${skill}: FINAL ${decision.score}/100 (${decision.level}) after ${convo.attemptNumber} attempt(s)`);
+      session.assessedSkills[skill] = {
+        score: final_score,
+        level: final_level,
+        reasoning,
+        gaps,
+        strengths,
+        totalAttempts: convo.attemptNumber,
+        conversationHistory: convo.history,
+        resources: agentResult.resources || null,
+      };
 
-    res.json({
-      status: 'completed',             // ← frontend checks this
-      skill,
-      score: decision.score,
-      level: decision.level,
-      reasoning: decision.reasoning,
-      gaps: decision.gaps,
-      strengths: decision.strengths,
-      totalAttempts: convo.attemptNumber,
-      assessedCount: Object.keys(session.assessedSkills).length,
-      totalRequired: session.jdSkills.required_skills?.length || 0,
-    });
+      if (agentResult.resources) session.skillResources[skill] = agentResult.resources;
+
+      console.log(`✓ ${skill}: ${final_score}/100 (${final_level}) after ${convo.attemptNumber} attempt(s)`);
+
+      return res.json({
+        status: 'completed',
+        skill,
+        score: final_score,
+        level: final_level,
+        reasoning,
+        gaps,
+        strengths,
+        totalAttempts: convo.attemptNumber,
+        assessedCount: Object.keys(session.assessedSkills).length,
+        totalRequired: session.jdSkills.required_skills?.length || 0,
+      });
+    }
+
+    return res.status(500).json({ error: 'Agent returned unexpected state' });
   } catch (error) {
+    console.error('Answer endpoint error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-/**
- * GET /api/assess/:sessionId/learning-plan (unchanged logic, same as before)
- */
 app.get('/api/assess/:sessionId/learning-plan', async (req, res) => {
   try {
     const { sessionId } = req.params;
     const session = assessmentSessions[sessionId];
     if (!session) return res.status(404).json({ error: 'Session not found' });
-
-    if (Object.keys(session.assessedSkills).length === 0) {
-      return res.status(400).json({ error: 'No skills assessed yet.' });
-    }
+    if (Object.keys(session.assessedSkills).length === 0) return res.status(400).json({ error: 'No skills assessed yet.' });
 
     const gapAnalysis = {};
     for (const skill of session.jdSkills.required_skills) {
@@ -528,33 +598,20 @@ app.get('/api/assess/:sessionId/learning-plan', async (req, res) => {
         currentScore: assessed?.score || 0,
         targetScore: 85,
         gap: (assessed?.score || 0) - 85,
+        agentResources: session.skillResources[skill.skill] || null,
       };
     }
 
-    const learningPlan = await generateLearningPlan(
-      session.jdSkills,
-      session.assessedSkills,
-      gapAnalysis
-    );
-
+    const learningPlan = await generateLearningPlan(session.jdSkills, session.assessedSkills, gapAnalysis);
     if (!learningPlan) return res.status(500).json({ error: 'Failed to generate learning plan' });
 
     session.learningPlan = learningPlan;
-
-    res.json({
-      sessionId,
-      assessedSkills: session.assessedSkills,
-      learningPlan,
-      timestamp: new Date(),
-    });
+    res.json({ sessionId, assessedSkills: session.assessedSkills, learningPlan, timestamp: new Date() });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-/**
- * GET /api/assess/:sessionId/summary
- */
 app.get('/api/assess/:sessionId/summary', (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -562,14 +619,8 @@ app.get('/api/assess/:sessionId/summary', (req, res) => {
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
     const gapAnalysis = session.jdSkills.required_skills.map((skill) => {
-      const candidateClaim = session.resumeSkills.skills?.find(
-        s => s.skill.toLowerCase() === skill.skill.toLowerCase()
-      );
-      return analyzeSkillGap(
-        skill.skill,
-        candidateClaim?.proficiency || 'unknown',
-        skill.level || 'not specified'
-      );
+      const candidateClaim = session.resumeSkills.skills?.find(s => s.skill.toLowerCase() === skill.skill.toLowerCase());
+      return analyzeSkillGap(skill.skill, candidateClaim?.proficiency || 'unknown', skill.level || 'not specified');
     });
 
     res.json({
@@ -590,25 +641,15 @@ app.get('/api/assess/:sessionId/summary', (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'Skill Assessment Backend is running', timestamp: new Date() });
+  res.json({ status: 'ok', message: 'Skill Assessment Agent running', timestamp: new Date() });
 });
-
-// ============================================================================
-// START SERVER
-// ============================================================================
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`\n${'='.repeat(70)}`);
-  console.log(`🚀 Skill Assessment Backend running on http://localhost:${PORT}`);
+  console.log(`🤖 Skill Assessment AGENT running on http://localhost:${PORT}`);
   console.log(`${'='.repeat(70)}`);
-  console.log(`API Endpoints:`);
-  console.log(`  POST   /api/assess                       - Start assessment`);
-  console.log(`  GET    /api/assess/:sessionId/next-question`);
-  console.log(`  POST   /api/assess/:sessionId/answer     - Submit answer (with feedback loop)`);
-  console.log(`  GET    /api/assess/:sessionId/learning-plan`);
-  console.log(`  GET    /api/assess/:sessionId/summary`);
-  console.log(`  GET    /api/health`);
+  console.log(`Agent Tools: evaluate_answer | generate_followup | finalize_skill | fetch_learning_resources`);
   console.log(`${'='.repeat(70)}\n`);
 });
 
