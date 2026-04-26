@@ -426,6 +426,14 @@ function AssessmentStage({ sessionId, onComplete }) {
               </span>
             </div>
 
+            <div className="question-meta">
+              <span>
+                Candidate claim: <strong>{currentQuestion.candidateClaimed || 'unknown'}</strong>
+                {currentQuestion.inferred ? ' (inferred)' : ''}
+              </span>
+              <span>Job requires: <strong>{currentQuestion.jobRequires || 'not specified'}</strong></span>
+            </div>
+
             <h2 className="question-text">{currentQuestion.question}</h2>
 
             <textarea
@@ -711,12 +719,38 @@ function ResultsStage({ sessionId, onRestart }) {
                     {summary.resumeSkills.skills.slice(0, 5).map((skill, i) => (
                       <div key={i} className="skill-item">
                         <span>{skill.skill}</span>
-                        <span className="proficiency">{skill.proficiency}</span>
+                        <span className="proficiency">
+                          {skill.proficiency}
+                          {skill.years ? ` • ${skill.years} yrs` : ''}
+                          {skill.inferred ? ' • inferred' : ''}
+                        </span>
                       </div>
                     ))}
                   </div>
                 </div>
               </div>
+
+              {summary.gapAnalysis && summary.gapAnalysis.length > 0 && (
+                <div className="details-grid gap-analysis">
+                  <div className="detail-section">
+                    <h4>📉 Skill Gap Analysis</h4>
+                    <div className="skills-list">
+                      {summary.gapAnalysis.map((gap, index) => (
+                        <div key={index} className="skill-item">
+                          <span>{gap.skill}</span>
+                          <span className="proficiency">
+                            {gap.meetsRequirement
+                              ? 'Matches requirement'
+                              : gap.candidateClaimed === 'unknown'
+                              ? 'Unknown fit'
+                              : 'Needs improvement'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
