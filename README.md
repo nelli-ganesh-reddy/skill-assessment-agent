@@ -36,27 +36,29 @@ graph TB
     A[Job Description] --> B[Skill Extraction]
     C[Resume] --> B
     B --> D[Skill Gap Analysis]
-
     D --> E[Assessment Agent Loop]
     E --> F[Tool: evaluate_answer]
     E --> G[Tool: generate_followup]
     E --> H[Tool: finalize_skill]
     E --> I[Tool: fetch_learning_resources]
-
     F --> J{Score ≥ 60?}
     J -->|Yes| H
     J -->|No| G
-
     H --> K[Learning Plan Generation]
     I --> K
-
     K --> L[Personalized Learning Path]
-
-    style E fill:#e1f5fe
-    style F fill:#f3e5f5
-    style G fill:#fff3e0
-    style H fill:#e8f5e8
-    style I fill:#fce4ec
+    style E fill:#C14828,stroke:#993C1D,color:#fff
+    style F fill:#2D5F0A,stroke:#27500A,color:#fff
+    style G fill:#E8A325,stroke:#854F0B,color:#fff
+    style H fill:#2D7051,stroke:#0F6E56,color:#fff
+    style I fill:#D14A70,stroke:#993556,color:#fff
+    style A fill:#185FA5,color:#fff
+    style B fill:#1D9E75,color:#fff
+    style C fill:#185FA5,color:#fff
+    style D fill:#BA7517,color:#fff
+    style J fill:#534AB7,color:#fff
+    style K fill:#993556,color:#fff
+    style L fill:#993556,color:#fff
 ```
 
 ### Core Components
