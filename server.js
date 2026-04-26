@@ -428,6 +428,81 @@ Return ONLY valid JSON.`;
 }
 
 // ============================================================================
+// ★ AGENT SKILL PRIORITIZATION ★
+// LLM decides which skill to assess next based on importance + candidate gap
+// ============================================================================
+
+async function agentPickNextSkill(remainingSkills, assessedSkills, candidateSkills) {
+  console.log(`\n[Agent] Picking next skill from: ${remainingSkills.map(s => s.skill).join(', ')}`);
+
+  // If only one left, no need to ask LLM
+  if (remainingSkills.length === 1) {
+    console.log(`[Agent] Only one skill left: ${remainingSkills[0].skill}`);
+    return remainingSkills[0];
+  }
+
+  const remainingContext = remainingSkills.map(s => {
+    const candidateClaim = candidateSkills.find(
+      c => c.skill.toLowerCase() === s.skill.toLowerCase()
+    );
+    return {
+      skill: s.skill,
+      importance: s.importance,
+      jobRequires: s.level || 'not specified',
+      candidateClaims: candidateClaim?.proficiency || 'unknown',
+      claimedVsRequired: candidateClaim
+        ? `candidate says ${candidateClaim.proficiency}, job needs ${s.level || 'not specified'}`
+        : 'no info on candidate level',
+    };
+  });
+
+  const alreadyAssessed = Object.entries(assessedSkills).map(([skill, data]) => ({
+    skill,
+    score: data.score,
+    level: data.level,
+  }));
+
+  const prompt = `You are a skill assessment agent deciding which skill to assess next.
+
+Already assessed:
+${JSON.stringify(alreadyAssessed, null, 2)}
+
+Remaining skills to assess:
+${JSON.stringify(remainingContext, null, 2)}
+
+Prioritization rules:
+1. Higher importance score -> assess first (most critical to the job)
+2. If importance is similar, assess skills where candidate level is BELOW job requirement first
+3. Skills where candidate claims advanced but job only needs beginner -> lower priority
+
+Return ONLY valid JSON:
+{
+  "chosen_skill": "Python",
+  "reason": "Highest importance (0.9) and candidate only claims beginner while job needs intermediate"
+}`;
+
+  const response = await callGroq([{ role: 'user', content: prompt }], 200);
+
+  if (!response.success) {
+    console.log('[Agent] Prioritization failed, falling back to importance sort');
+    return remainingSkills.sort((a, b) => b.importance - a.importance)[0];
+  }
+
+  try {
+    const jsonMatch = response.content.match(/\{[\s\S]*\}/);
+    const decision = JSON.parse(jsonMatch[0]);
+    console.log(`[Agent] Chose: ${decision.chosen_skill} — ${decision.reason}`);
+    const chosen = remainingSkills.find(
+      s => s.skill.toLowerCase() === decision.chosen_skill.toLowerCase()
+    );
+    return chosen || remainingSkills.sort((a, b) => b.importance - a.importance)[0];
+  } catch (e) {
+    console.log('[Agent] Could not parse prioritization, falling back to importance sort');
+    return remainingSkills.sort((a, b) => b.importance - a.importance)[0];
+  }
+}
+
+// ============================================================================
 // API ENDPOINTS
 // ============================================================================
 
@@ -466,10 +541,17 @@ app.get('/api/assess/:sessionId/next-question', async (req, res) => {
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
     const requiredSkills = session.jdSkills.required_skills;
-    let nextSkill = null;
-    for (const skill of requiredSkills) {
-      if (!session.assessedSkills[skill.skill]) { nextSkill = skill; break; }
-    }
+
+    // Find remaining (unassessed) skills
+    const remainingSkills = requiredSkills.filter(s => !session.assessedSkills[s.skill]);
+    if (remainingSkills.length === 0) return res.json({ completed: true, message: 'All skills assessed!' });
+
+    // ★ AGENT DECIDES which skill to assess next ★
+    const nextSkill = await agentPickNextSkill(
+      remainingSkills,
+      session.assessedSkills,
+      session.resumeSkills.skills || []
+    );
 
     if (!nextSkill) return res.json({ completed: true, message: 'All skills assessed!' });
 
