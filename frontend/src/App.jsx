@@ -12,10 +12,9 @@ const assessmentAPI = {
   getNextQuestion: (sessionId) =>
     axios.get(`${API_BASE}/api/assess/${sessionId}/next-question`),
 
-  submitAnswer: (sessionId, skill, question, answer) =>
+  submitAnswer: (sessionId, skill, answer) =>
     axios.post(`${API_BASE}/api/assess/${sessionId}/answer`, {
       skill,
-      question,
       answer,
     }),
 
@@ -316,6 +315,7 @@ function AssessmentStage({ sessionId, onComplete }) {
   const [currentQuestion, setCurrentQuestion] = useState(null);
   const [userAnswer, setUserAnswer] = useState('');
   const [assessment, setAssessment] = useState(null);
+  const [followUp, setFollowUp] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [assessedCount, setAssessedCount] = useState(0);
@@ -332,6 +332,7 @@ function AssessmentStage({ sessionId, onComplete }) {
     setError(null);
     setUserAnswer('');
     setAssessment(null);
+    setFollowUp(null);
 
     try {
       const response = await assessmentAPI.getNextQuestion(sessionId);
@@ -364,28 +365,43 @@ function AssessmentStage({ sessionId, onComplete }) {
       const response = await assessmentAPI.submitAnswer(
         sessionId,
         currentQuestion.skill,
-        currentQuestion.question,
         userAnswer
       );
 
-      setAssessment(response.data);
-      setAssessedCount(response.data.assessedCount);
+      // Check the status to determine next action
+      if (response.data.status === 'followup') {
+        // FOLLOW-UP: Show follow-up question
+        setFollowUp({
+          question: response.data.followup_question,
+          reason: response.data.followup_reason,
+          attemptNumber: response.data.attemptNumber,
+          interimScore: response.data.score,
+          reasoning: response.data.reasoning,
+        });
+        setUserAnswer('');
+      } else if (response.data.status === 'completed') {
+        // COMPLETED: Skill fully assessed
+        setAssessment(response.data);
+        setAssessedCount(response.data.assessedCount);
 
-      // Add to conversation history
-      setConversationHistory([
-        ...conversationHistory,
-        {
-          skill: currentQuestion.skill,
-          question: currentQuestion.question,
-          answer: userAnswer,
-          assessment: response.data,
-        },
-      ]);
+        // Add to conversation history
+        setConversationHistory([
+          ...conversationHistory,
+          {
+            skill: currentQuestion.skill,
+            question: currentQuestion.question,
+            answer: userAnswer,
+            followUp: followUp?.question || null,
+            followUpAnswer: followUp ? userAnswer : null,
+            assessment: response.data,
+          },
+        ]);
 
-      // Auto load next question after 5 seconds
-      setTimeout(() => {
-        loadNextQuestion();
-      }, 5000);
+        // Auto load next question after 3 seconds
+        setTimeout(() => {
+          loadNextQuestion();
+        }, 3000);
+      }
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to submit answer');
     } finally {
@@ -416,7 +432,7 @@ function AssessmentStage({ sessionId, onComplete }) {
 
         {error && <div className="error-message">{error}</div>}
 
-        {/* Current Question */}
+        {/* Current Question or Follow-up */}
         {currentQuestion && !assessment && (
           <div className="question-box">
             <div className="question-header">
@@ -424,17 +440,34 @@ function AssessmentStage({ sessionId, onComplete }) {
               <span className="importance">
                 Importance: {(currentQuestion.importance * 100).toFixed(0)}%
               </span>
+              {followUp && (
+                <span className="attempt-number">Attempt {followUp.attemptNumber}</span>
+              )}
             </div>
 
-            <div className="question-meta">
-              <span>
-                Candidate claim: <strong>{currentQuestion.candidateClaimed || 'unknown'}</strong>
-                {currentQuestion.inferred ? ' (inferred)' : ''}
-              </span>
-              <span>Job requires: <strong>{currentQuestion.jobRequires || 'not specified'}</strong></span>
-            </div>
+            {!followUp && (
+              <div className="question-meta">
+                <span>
+                  Candidate claim: <strong>{currentQuestion.candidateClaimed || 'unknown'}</strong>
+                </span>
+                <span>Job requires: <strong>{currentQuestion.jobRequires || 'not specified'}</strong></span>
+              </div>
+            )}
 
-            <h2 className="question-text">{currentQuestion.question}</h2>
+            {followUp && (
+              <div className="followup-context">
+                <p className="interim-feedback">
+                  <strong>Initial assessment:</strong> {followUp.reasoning}
+                </p>
+                <p className="followup-reason">
+                  <strong>Follow-up reason:</strong> {followUp.reason}
+                </p>
+              </div>
+            )}
+
+            <h2 className="question-text">
+              {followUp ? followUp.question : currentQuestion.question}
+            </h2>
 
             <textarea
               value={userAnswer}
@@ -452,7 +485,7 @@ function AssessmentStage({ sessionId, onComplete }) {
               onClick={handleSubmitAnswer}
               disabled={loading || !userAnswer.trim()}
             >
-              {loading ? '⏳ Evaluating...' : '✓ Submit Answer'}
+              {loading ? '⏳ Evaluating...' : followUp ? '✓ Submit Follow-up' : '✓ Submit Answer'}
             </button>
           </div>
         )}
@@ -491,6 +524,10 @@ function AssessmentStage({ sessionId, onComplete }) {
                   </ul>
                 </div>
               </div>
+
+              <p className="attempt-info">
+                <small>Assessed in {assessment.totalAttempts} attempt{assessment.totalAttempts > 1 ? 's' : ''}</small>
+              </p>
 
               <p className="next-action">
                 {assessment.assessedCount === assessment.totalRequired
