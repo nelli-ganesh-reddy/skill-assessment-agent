@@ -71,18 +71,20 @@ async function callGroq(messages, maxTokens = 500) {
 async function extractSkillsFromJD(jdText) {
   const prompt = `You are a skill extraction expert. Analyze this Job Description and extract ONLY the required and nice-to-have skills.
 
+Important: If the JD specifies an expected proficiency level for a skill, capture it using beginner/intermediate/advanced. If no level is present, set level to null.
+
 Job Description:
 ${jdText}
 
 Return a JSON object with this exact structure:
 {
   "required_skills": [
-    {"skill": "Python", "importance": 0.9, "category": "programming_language"},
-    {"skill": "Django", "importance": 0.85, "category": "framework"},
+    {"skill": "Python", "importance": 0.9, "category": "programming_language", "level": "intermediate"},
+    {"skill": "Django", "importance": 0.85, "category": "framework", "level": null},
     ...
   ],
   "nice_to_have": [
-    {"skill": "Docker", "importance": 0.6, "category": "devops"},
+    {"skill": "Docker", "importance": 0.6, "category": "devops", "level": null},
     ...
   ]
 }
@@ -111,18 +113,30 @@ Be precise and only extract actual skills mentioned. Return ONLY valid JSON, no 
 async function extractSkillsFromResume(resumeText) {
   const prompt = `You are a resume analyzer. Extract all skills mentioned in this resume.
 
+IMPORTANT: If proficiency level is NOT explicitly stated, INFER it from context:
+- If skill mentioned in "EXPERIENCE" section with years → likely intermediate/advanced
+- If skill mentioned in "SKILLS" section only → likely beginner/intermediate
+- If mentioned with years of experience → estimate: <1yr=beginner, 1-3yrs=intermediate, >3yrs=advanced
+- If no years but in recent projects → intermediate
+- If mentioned passively → beginner
+
 Resume:
 ${resumeText}
 
-Return a JSON object with this structure:
+Return JSON with INFERRED proficiency:
 {
   "skills": [
-    {"skill": "Python", "proficiency": "intermediate", "years": 2},
-    {"skill": "Java", "proficiency": "beginner", "years": 0.5},
+    {"skill": "Python", "proficiency": "intermediate", "years": 2, "inferred": true},
+    {"skill": "Java", "proficiency": "beginner", "years": null, "inferred": true},
     ...
   ],
   "experience_summary": "Brief summary of relevant experience"
 }
+
+Notes:
+- proficiency: "beginner", "intermediate", "advanced"
+- years: actual or estimated from context
+- inferred: true if proficiency was inferred from context, false if explicitly stated
 
 Return ONLY valid JSON, no extra text.`;
 
@@ -145,25 +159,46 @@ Return ONLY valid JSON, no extra text.`;
 /**
  * Generate assessment question for a skill
  */
-async function generateAssessmentQuestion(skill, candidateLevel = 'unknown') {
+async function generateAssessmentQuestion(skill, candidateLevel = 'unknown', jobRequirement = 'not specified') {
   const prompt = `You are a technical interviewer assessing ${skill} proficiency.
 
-The candidate claims to have ${candidateLevel || 'some'} experience with ${skill}.
+Context:
+- Candidate claims experience level: ${candidateLevel || 'unknown'}
+- Job requires level: ${jobRequirement || 'not specified'}
 
-Generate ONE specific, practical question to assess their actual proficiency level. 
+${jobRequirement && jobRequirement !== 'not specified' ? `Since the job requires ${jobRequirement} level, generate a question at that difficulty level to verify if candidate meets it.` : 'Generate an appropriate baseline question.'}
+
 The question should:
 - Be clear and concrete
-- Allow them to demonstrate depth of knowledge
+- Allow them to demonstrate depth of knowledge at the required level
 - Be answerable in 1-2 sentences
+- Match the job requirement difficulty
 
 Return ONLY the question, nothing else.`;
 
   const response = await callGroq(
     [{ role: 'user', content: prompt }],
-    100
+    150
   );
 
   return response.success ? response.content : null;
+}
+
+/**
+ * Determine if candidate meets job requirement
+ */
+function analyzeSkillGap(skill, candidateLevel, requiredLevel) {
+  const levels = { beginner: 1, intermediate: 2, advanced: 3 };
+  const candidateScore = levels[candidateLevel?.toLowerCase()] || 0;
+  const requiredScore = levels[requiredLevel?.toLowerCase()] || 0;
+
+  return {
+    skill,
+    candidateClaimed: candidateLevel || 'unknown',
+    jobRequires: requiredLevel || 'not specified',
+    gap: requiredScore - candidateScore,
+    meetsRequirement: candidateScore >= requiredScore,
+  };
 }
 
 /**
@@ -358,9 +393,17 @@ app.get('/api/assess/:sessionId/next-question', async (req, res) => {
       s => s.skill.toLowerCase() === nextSkill.skill.toLowerCase()
     );
 
+    const jobRequirementLevel = nextSkill.level || 'not specified';
     const question = await generateAssessmentQuestion(
       nextSkill.skill,
-      candidateClaim?.proficiency || 'unknown'
+      candidateClaim?.proficiency || 'unknown',
+      jobRequirementLevel
+    );
+
+    const skillGap = await analyzeSkillGap(
+      nextSkill.skill,
+      candidateClaim?.proficiency || 'unknown',
+      jobRequirementLevel
     );
 
     if (!question) {
@@ -373,6 +416,10 @@ app.get('/api/assess/:sessionId/next-question', async (req, res) => {
       skill: nextSkill.skill,
       question,
       importance: nextSkill.importance,
+      candidateClaimed: candidateClaim?.proficiency || 'unknown',
+      inferred: candidateClaim?.inferred ?? true,
+      jobRequires: jobRequirementLevel,
+      skillGap,
     });
   } catch (error) {
     console.error('Error:', error);
@@ -504,12 +551,25 @@ app.get('/api/assess/:sessionId/summary', (req, res) => {
       return res.status(404).json({ error: 'Session not found' });
     }
 
+    const gapAnalysis = session.jdSkills.required_skills.map((skill) => {
+      const candidateClaim = session.resumeSkills.skills?.find(
+        (s) => s.skill.toLowerCase() === skill.skill.toLowerCase()
+      );
+
+      return analyzeSkillGap(
+        skill.skill,
+        candidateClaim?.proficiency || 'unknown',
+        skill.level || 'not specified'
+      );
+    });
+
     res.json({
       sessionId,
       jdSkills: session.jdSkills,
       resumeSkills: session.resumeSkills,
       assessedSkills: session.assessedSkills,
       learningPlan: session.learningPlan || null,
+      gapAnalysis,
       progress: {
         assessed: Object.keys(session.assessedSkills).length,
         total: session.jdSkills.required_skills?.length || 0,

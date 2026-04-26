@@ -247,13 +247,15 @@ body {
 }
 
 .textarea {
+  width: 100%;
+  display: block;
   padding: var(--spacing-lg);
   border: 2px solid var(--border);
   border-radius: var(--radius-lg);
   font-family: var(--font-mono);
   font-size: 0.95rem;
   resize: vertical;
-  min-height: 200px;
+  min-height: 220px;
   transition: var(--transition);
   background: var(--bg-light);
 }
@@ -266,7 +268,7 @@ body {
 }
 
 .textarea.large {
-  min-height: 250px;
+  min-height: 280px;
 }
 
 .input-actions {
@@ -423,6 +425,7 @@ body {
   border-radius: var(--radius-xl);
   border: 2px solid var(--border);
   margin-bottom: var(--spacing-2xl);
+  max-width: 100%;
 }
 
 .question-header {
@@ -432,6 +435,21 @@ body {
   margin-bottom: var(--spacing-lg);
   flex-wrap: wrap;
   gap: var(--spacing-md);
+}
+
+.question-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-lg);
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.question-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 .skill-badge {
