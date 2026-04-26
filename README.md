@@ -2,7 +2,6 @@
 
 AI-powered skill assessment and personalized learning plan generator using Groq's Llama 3.3 model with advanced tool-use capabilities.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 [![React](https://img.shields.io/badge/React-18+-blue.svg)](https://reactjs.org/)
 
@@ -400,32 +399,5 @@ Django: 45/100 (beginner)
    ├── Timeline: 2 weeks
    └── Resources: Containerization fundamentals
 ```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-### Development Guidelines
-
-- Follow existing code style and patterns
-- Add tests for new features
-- Update documentation for API changes
-- Ensure all dependencies are properly licensed
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **Groq** for providing fast and affordable AI inference
-- **Meta** for the Llama 3.3 model
-- **Open source community** for the amazing tools and libraries
-
----
 
 Built with ❤️ for skill assessment and career development
