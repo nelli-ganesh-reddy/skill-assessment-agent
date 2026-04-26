@@ -382,7 +382,7 @@ function AssessmentStage({ sessionId, onComplete }) {
         },
       ]);
 
-      // Auto load next question after 2 seconds
+      // Auto load next question after 5 seconds
       setTimeout(() => {
         loadNextQuestion();
       }, 5000);
