@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import axios from 'axios';
 import './App.css';
 
-const API_BASE = '';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 // API Service
 const assessmentAPI = {
