@@ -705,17 +705,36 @@ function ResultsStage({ sessionId, onRestart }) {
 
                     <div className="resources">
                       <h5>📖 Resources:</h5>
-                      <ul>
-                        {item.resources.slice(0, 3).map((res, i) => (
-                          <li key={i}>
-                            <strong>{res.title}</strong>
-                            <span className="meta">
-                              {res.type} • {res.hours}h
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
+                      {item.resources && item.resources.length > 0 ? (
+                        <ul>
+                          {item.resources.slice(0, 4).map((res, i) => (
+                            <li key={i}>
+                              {res.title ? (
+                                <>
+                                  <strong>{res.title}</strong>
+                                  <span className="meta">
+                                    {res.type || 'course'} • {res.hours || 0}h
+                                  </span>
+                                  {res.description && (
+                                    <p className="description">{res.description}</p>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="empty">No resource details available</span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="no-resources">No specific resources generated</p>
+                      )}
                     </div>
+
+                    {item.resource_hours && (
+                      <div className="resource-summary">
+                        <small>📚 Total hours for this skill: <strong>{item.resource_hours} hours</strong></small>
+                      </div>
+                    )}
 
                     {item.adjacent_skills && item.adjacent_skills.length > 0 && (
                       <div className="adjacent">

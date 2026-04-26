@@ -168,7 +168,7 @@ Return ONLY valid JSON:
     {
       "title": "Resource name",
       "type": "course|documentation|book|video|practice",
-      "url": "real URL",
+      "url": "https://example.com/resource",
       "hours": 10,
       "description": "Why this is good"
     }
@@ -177,14 +177,33 @@ Return ONLY valid JSON:
   "adjacent_skills": ["skill1", "skill2"]
 }
 
-Use REAL resources: GeeksforGeeks, official docs, freeCodeCamp, MDN, specific Udemy courses.`;
+IMPORTANT: Always provide at least 3 resources. Use REAL resources: GeeksforGeeks, official docs, freeCodeCamp, MDN, specific courses.
+Each resource title MUST have a real name, type MUST be one of the enum values, url MUST be a valid URL, hours MUST be a positive number.`;
 
-  const response = await callGroq([{ role: 'user', content: prompt }], 400);
-  if (!response.success) return { resources: [], weeks_needed: 4, adjacent_skills: [] };
+  const response = await callGroq([{ role: 'user', content: prompt }], 600);
+  if (!response.success) {
+    console.log('  [Tool] Resource fetch failed, returning defaults');
+    return { resources: [], weeks_needed: 4, adjacent_skills: [] };
+  }
+  
   try {
     const jsonMatch = response.content.match(/\{[\s\S]*\}/);
-    return JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(jsonMatch[0]);
+    
+    // Validate and clean up resources
+    if (parsed.resources && Array.isArray(parsed.resources)) {
+      parsed.resources = parsed.resources.map(r => ({
+        title: r.title || 'Unnamed Resource',
+        type: r.type || 'course',
+        url: r.url || 'https://example.com',
+        hours: Number(r.hours) || 5,
+        description: r.description || 'Learning resource'
+      }));
+    }
+    
+    return parsed;
   } catch (e) {
+    console.log('  [Tool] Failed to parse resources:', e.message);
     return { resources: [], weeks_needed: 4, adjacent_skills: [] };
   }
 }
@@ -400,13 +419,13 @@ Create a personalized learning plan. Return JSON:
   "learning_path": [
     {
       "skill": "Django",
-      "priority": "critical",
+      "priority": "critical|high|medium",
       "current_level": 40,
       "target_level": 85,
       "weeks_needed": 6,
       "reason": "Essential for role, significant gap",
       "resources": [
-        {"title": "Django for Beginners", "type": "course", "url": "...", "hours": 30}
+        {"title": "Resource name", "type": "course|book|video|documentation", "url": "https://...", "hours": 30, "description": "Good intro"}
       ],
       "adjacent_skills": ["REST APIs", "PostgreSQL"]
     }
@@ -417,14 +436,62 @@ Create a personalized learning plan. Return JSON:
   "summary": "Focus on Django first..."
 }
 
-Return ONLY valid JSON.`;
+IMPORTANT for resources section:
+- Each resource MUST have: title (string), type (course|book|video|documentation), url (valid URL), hours (number), description (string)
+- Provide 2-4 resources per skill
+- Hours must be realistic (10-50 range for most courses)
+- URL must start with https://
+- Total estimated_study_hours should be the SUM of all resource hours across all skills
 
-  const response = await callGroq([{ role: 'user', content: prompt }], 1000);
+Return ONLY valid JSON, no markdown code blocks.`;
+
+  const response = await callGroq([{ role: 'user', content: prompt }], 1200);
   if (!response.success) return null;
   try {
     const jsonMatch = response.content.match(/\{[\s\S]*\}/);
-    return JSON.parse(jsonMatch[0]);
-  } catch (e) { return null; }
+    const parsed = JSON.parse(jsonMatch[0]);
+    
+    // Validate and normalize the learning path
+    if (parsed.learning_path && Array.isArray(parsed.learning_path)) {
+      let totalHours = 0;
+      
+      parsed.learning_path = parsed.learning_path.map(item => {
+        // Ensure resources have all required fields
+        if (item.resources && Array.isArray(item.resources)) {
+          item.resources = item.resources.map(r => ({
+            title: r.title || 'Resource',
+            type: r.type || 'course',
+            url: r.url || 'https://example.com',
+            hours: Number(r.hours) || 10,
+            description: r.description || ''
+          }));
+          
+          // Add up resource hours for this skill
+          item.resource_hours = item.resources.reduce((sum, r) => sum + r.hours, 0);
+          totalHours += item.resource_hours;
+        } else {
+          item.resources = [];
+          item.resource_hours = 0;
+        }
+        
+        return item;
+      });
+      
+      // Recalculate total if it seems wrong
+      if (totalHours > 0 && parsed.estimated_study_hours) {
+        const difference = Math.abs(parsed.estimated_study_hours - totalHours);
+        if (difference > 50) {
+          console.log(`[Learning Plan] Correcting estimated_study_hours from ${parsed.estimated_study_hours} to ${totalHours}`);
+          parsed.estimated_study_hours = totalHours;
+        }
+      }
+    }
+    
+    return parsed;
+  } catch (e) {
+    console.log('[Learning Plan] Parse error:', e.message);
+    return null;
+  }
 }
 
 // ============================================================================
@@ -569,8 +636,10 @@ app.get('/api/assess/:sessionId/next-question', async (req, res) => {
       candidateClaimed: candidateClaim?.proficiency || 'unknown',
     };
 
+    const assessedCount = Object.keys(session.assessedSkills).length;
+
     res.json({
-      skillIndex: requiredSkills.indexOf(nextSkill),
+      skillIndex: assessedCount,
       totalSkills: requiredSkills.length,
       skill: nextSkill.skill,
       question,

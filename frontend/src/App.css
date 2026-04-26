@@ -881,23 +881,59 @@ body {
 
 .resources ul {
   list-style: none;
-  padding-left: var(--spacing-lg);
+  padding-left: 0;
 }
 
 .resources li {
-  padding: var(--spacing-sm) 0;
+  padding: var(--spacing-sm) var(--spacing-md);
+  margin-bottom: var(--spacing-sm);
   font-size: 0.9rem;
   line-height: 1.5;
+  background: rgba(99, 102, 241, 0.05);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius-sm);
 }
 
 .resources strong {
   color: var(--text-primary);
   display: block;
+  margin-bottom: 0.25rem;
 }
 
 .resources .meta {
   color: var(--text-tertiary);
   font-size: 0.85rem;
+  display: block;
+}
+
+.resources .description {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  margin-top: 0.25rem;
+  font-style: italic;
+}
+
+.resources .empty {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.resources .no-resources {
+  color: var(--text-tertiary);
+  font-style: italic;
+  font-size: 0.9rem;
+}
+
+.resource-summary {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.05) 0%, rgba(99, 102, 241, 0.05) 100%);
+  padding: var(--spacing-md);
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--success);
+  margin-top: var(--spacing-md);
+}
+
+.resource-summary small {
+  color: var(--text-secondary);
 }
 
 .adjacent {
