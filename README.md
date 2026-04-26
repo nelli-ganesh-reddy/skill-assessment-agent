@@ -5,19 +5,6 @@ AI-powered skill assessment and personalized learning plan generator using Groq'
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 [![React](https://img.shields.io/badge/React-18+-blue.svg)](https://reactjs.org/)
 
-## 📋 Table of Contents
-
-- [Overview](#Overview)
-- [Architecture](#architecture)
-- [Features](#features)
-- [Tech Stack](#tech-stack)
-- [Installation](#installation)
-- [Usage](#usage)
-- [API Documentation](#api-documentation)
-- [Scoring Logic](#scoring-logic)
-- [Sample Inputs & Outputs](#sample-inputs--outputs)
-- [Contributing](#contributing)
-
 ## 🎯 Overview
 
 The Skill Assessment Agent is an intelligent system that evaluates candidates' technical skills against job requirements and generates personalized learning plans. It uses advanced AI agents with tool-use capabilities to conduct conversational assessments and provide detailed feedback.
